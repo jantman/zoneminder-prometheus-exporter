@@ -291,14 +291,15 @@ class ZmExporter:
                 'name': m.get()['Name']
             }
             self._monitor_id_to_name[int(m.get()['Id'])] = m.get()['Name']
-            info.add_metric(value={
+            info_vals: dict = {
                 camel_to_snake(x): str(m.get()[x]) for x in [
                     'ServerId', 'StorageId', 'Type', 'DecodingEnabled',
                     'Device', 'Channel', 'Format', 'Method', 'Encoder',
                     'RecordAudio', 'EventPrefix', 'Controllable', 'ControlId',
                     'Importance'
                 ]
-            } | labels)
+            } | labels
+            info.add_metric(labels=list(info_vals.keys()), value=info_vals)
             curr_status = m.status()
             status.add_metric(
                 labels=labels,
