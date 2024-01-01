@@ -1,8 +1,8 @@
 FROM python:3.12-bookworm
 
 COPY requirements.txt /requirements.txt
-COPY main.py /main.py
 RUN pip install -r /requirements.txt
+COPY main.py /main.py
 
 EXPOSE 8080
 

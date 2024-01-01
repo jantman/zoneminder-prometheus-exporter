@@ -235,7 +235,7 @@ class ZmExporter:
             'Monitor event count'
         )
         event_disk_space = LabeledGaugeMetricFamily(
-            'zm_monitor_event_disk_space',
+            'zm_monitor_event_disk_space_bytes',
             'Monitor event disk space'
         )
         archived_event_count = LabeledGaugeMetricFamily(
@@ -243,7 +243,7 @@ class ZmExporter:
             'Monitor archived event count'
         )
         archived_event_disk_space = LabeledGaugeMetricFamily(
-            'zm_monitor_archived_event_disk_space',
+            'zm_monitor_archived_event_disk_space_bytes',
             'Monitor archived event disk space'
         )
         enabled = LabeledGaugeMetricFamily(
@@ -280,7 +280,7 @@ class ZmExporter:
             'Monitor analysis FPS'
         )
         capture_bw = LabeledGaugeMetricFamily(
-            'zm_monitor_capture_bandwidth',
+            'zm_monitor_capture_bandwidth_bytes_per_second',
             'Monitor capture bandwidth'
         )
         self._monitor_id_to_name: Dict[int, str] = {}
@@ -322,7 +322,7 @@ class ZmExporter:
                         exc_info=True
                     )
             enabled.add_metric(
-                labels=labels, value=1 if m.enabled() else 0
+                labels=labels, value=m.get()['Enabled']
             )
             function.add_metric(
                 value={
@@ -456,7 +456,7 @@ class ZmExporter:
                     'id': str(s.id()),
                     'definition': str(s.definition())
                 },
-                value=1 if s.active() else 0
+                value=s.get()['IsActive']
             )
         yield metric
 
@@ -478,7 +478,7 @@ class ZmExporter:
             logger.debug('Websocket response: %s', data)
             duration = time.time() - start
             assert data['status'] == 'Success'
-            yield GaugeMetricFamily(
+            yield LabeledGaugeMetricFamily(
                 'zm_zmes_websocket_response_time_seconds',
                 'ZMES websocket server response time to '
                 'version request, and status response as a label',
@@ -491,7 +491,7 @@ class ZmExporter:
                 wsurl, ex, exc_info=True
             )
             duration = time.time() - start
-            yield GaugeMetricFamily(
+            yield LabeledGaugeMetricFamily(
                 'zm_zmes_websocket_response_time_seconds',
                 'ZMES websocket server response time to '
                 'version request, and status response as a label',
