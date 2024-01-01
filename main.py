@@ -32,7 +32,9 @@ import logging
 import socket
 import time
 import re
-from typing import Generator, List, Dict, Optional
+from datetime import datetime
+from typing import Generator, List, Dict, Optional, Tuple
+import json
 
 from wsgiref.simple_server import make_server, WSGIServer
 from prometheus_client.core import (
@@ -41,8 +43,9 @@ from prometheus_client.core import (
 from prometheus_client.exposition import make_wsgi_app, _SilentHandler
 from prometheus_client.samples import Sample
 from pyzm.api import ZMApi
+from pyzm.ZMMemory import ZMMemory
 from pyzm.helpers import Monitor, State
-from requests import Response
+from websocket import create_connection
 
 FORMAT = "[%(asctime)s %(levelname)s] %(message)s"
 logging.basicConfig(level=logging.WARNING, format=FORMAT)
@@ -50,6 +53,8 @@ logger = logging.getLogger()
 
 
 def camel_to_snake(name):
+    if name == 'SaveJPEGs':
+        return 'save_jpegs'
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
 
@@ -129,7 +134,20 @@ class LabeledStateSetMetricFamily(Metric):
             ))
 
 
+class InvalidStatusStringException(Exception):
+    pass
+
+
+StatusType = Tuple[str, float, int]
+
+
 class ZmExporter:
+
+    STATUS_RE: re.Pattern = re.compile(
+        r"^'(?P<command>[^']+)' running since (?P<year>\d{1,2})/"
+        r"(?P<month>\d{1,2})/(?P<day>\d{1,2}) (?P<hour>\d{1,2}):"
+        r"(?P<minute>\d{1,2}):(?P<second>\d{1,2}), pid = (?P<pid>\d+).*"
+    )
 
     def _env_or_err(self, name: str) -> str:
         s: str = os.environ.get(name)
@@ -146,7 +164,7 @@ class ZmExporter:
         self._api: ZMApi = ZMApi(options={'apiurl': self._api_url})
         logger.debug('Connected to ZM')
         self.query_time: float = 0.0
-        self._monitor_ids: List[int] = []
+        self._monitor_id_to_name: Dict[int, str] = {}
 
     def collect(self) -> Generator[Metric, None, None]:
         logger.debug('Beginning collection')
@@ -154,6 +172,8 @@ class ZmExporter:
         for meth in [
             self._do_monitors,
             self._do_states,
+            self._do_monitor_shm,
+            self._do_zmes_websocket,
         ]:
             yield from meth()
         dc_url: str = self._api.api_url + '/host/daemonCheck.json'
@@ -166,41 +186,6 @@ class ZmExporter:
             name='zm_daemon_check', documentation='ZM daemon check',
             value=dc_resp['result']
         )
-        """
-        - my previous monitoring stuff - https://github.com/jantman/privatepuppet/blob/master/files/simple_monitoring/simple_monitoring.py#L614-L845
-
-        $ curl -s http://bigserver.jasonantman.com/api/monitors/daemonStatus/id:1/daemon:zmc.json | python -mjson.tool
-        {
-            "status": true,
-            "statustext": "'zmc -m 1' running since 23/12/25 15:40:42, pid = 75"
-        }
-
-        Inside the container:
-        root@c96751634601:/# zmu -lv
-          Id Func State TrgState    LastImgTim RdIdx WrIdx LastEvt FrmRate
-           1    3     1        0 1703630080.91930237     3     671    9.99
-           2    2     1        0 1703630080.92930605     3       0    9.97
-           3    3     1        0 1703630080.91930414     0     678    9.97
-           4    2     1        0 1703630080.94929610     1       0    9.97
-           5    2     1        0 1703630080.952331059     0       0   25.01
-        root@c96751634601:/# zmdc.pl check
-        running
-        root@c96751634601:/# zmdc.pl status
-        'zmcontrol.pl --id 4' running since 23/12/25 15:40:43, pid = 99, valid
-        'zmeventnotification.pl' running since 23/12/25 15:40:44, pid = 124, valid
-        'zmwatch.pl' running since 23/12/25 15:40:44, pid = 115, valid
-        'zmc -m 4' running since 23/12/25 15:40:43, pid = 94, valid
-        'zmtelemetry.pl' running since 23/12/25 15:40:44, pid = 120, valid
-        'zmfilter.pl --filter_id=2 --daemon' running since 23/12/25 15:40:44, pid = 111, valid
-        'zmfilter.pl --filter_id=1 --daemon' running since 23/12/25 15:40:43, pid = 107, valid
-        'zmcontrol.pl --id 2' running since 23/12/25 15:40:42, pid = 83, valid
-        'zmstats.pl' running since 23/12/25 15:40:44, pid = 128, valid
-        'zmc -m 2' running since 23/12/25 15:40:42, pid = 79, valid
-        'zmcontrol.pl --id 3' running since 23/12/25 15:40:43, pid = 91, valid
-        'zmc -m 1' running since 23/12/25 15:40:42, pid = 75, valid
-        'zmc -m 5' running since 23/12/25 15:40:43, pid = 103, valid
-        'zmc -m 3' running since 23/12/25 15:40:42, pid = 87, valid
-        """
         self.query_time = time.time() - qstart
         yield GaugeMetricFamily(
             'zm_query_time_seconds',
@@ -209,12 +194,23 @@ class ZmExporter:
         )
         logger.debug('Finished collection')
 
+    def _parse_zmdc_status(self, status: str) -> StatusType:
+        m: Optional[re.Match]
+        if not (m := self.STATUS_RE.match(status)):
+            raise InvalidStatusStringException(
+                f'Not a parseable status: {status}'
+            )
+        dt: datetime = datetime(
+            year=int(f'20{m.group("year")}'),
+            month=int(m.group('month')), day=int(m.group('day')),
+            hour=int(m.group('hour')), minute=int(m.group('minute')),
+            second=int(m.group('second'))
+        )
+        now: datetime = datetime.now()
+        age: float = (now - dt).total_seconds()
+        return m.group('command'), age, int(m.group('pid'))
+
     def _do_monitors(self) -> Generator[Metric, None, None]:
-        """
-        @TODO
-        - .status() for each monitor (apparently free-form string?) - being logged as debug
-        {'statustext': "'zmc -m 6' running since 23/12/31 16:08:19, pid = 107"}
-        """
         logger.debug('Querying monitors')
         monitors: List[Monitor] = self._api.monitors(
             options={'force_reload': True}
@@ -223,8 +219,16 @@ class ZmExporter:
         info = InfoMetricFamily(
             'zm_monitor_info', 'Information about a monitor',
         )
+        zmc = LabeledGaugeMetricFamily(
+            'zm_monitor_zmc_uptime_seconds',
+            'Uptime of monitor zmc process in seconds'
+        )
+        zmc_pid = LabeledGaugeMetricFamily(
+            'zm_monitor_zmc_pid',
+            'Monitor zmc process PID'
+        )
         status = LabeledGaugeMetricFamily(
-            'zm_monitor_status','Monitor status'
+            'zm_monitor_status', 'Monitor status'
         )
         event_count = LabeledGaugeMetricFamily(
             'zm_monitor_event_count',
@@ -279,26 +283,44 @@ class ZmExporter:
             'zm_monitor_capture_bandwidth',
             'Monitor capture bandwidth'
         )
-        self._monitor_ids = []
+        self._monitor_id_to_name: Dict[int, str] = {}
         m: Monitor
         for m in monitors:
             labels: Dict[str, str] = {
-                'id': m.get()['Id'],
+                'id': str(m.get()['Id']),
                 'name': m.get()['Name']
             }
-            self._monitor_ids.append(int(m.get()['Id']))
+            self._monitor_id_to_name[int(m.get()['Id'])] = m.get()['Name']
             info.add_metric(labels=labels, value={
-                camel_to_snake(x): m.get()[x] for x in [
+                camel_to_snake(x): str(m.get()[x]) for x in [
                     'ServerId', 'StorageId', 'Type', 'DecodingEnabled',
                     'Device', 'Channel', 'Format', 'Method', 'Encoder',
                     'RecordAudio', 'EventPrefix', 'Controllable', 'ControlId',
                     'Importance'
                 ]
             })
+            curr_status = m.status()
             status.add_metric(
                 labels=labels,
-                value=1 if m.status()['status'] else 0
+                value=1 if curr_status['status'] else 0
             )
+            if curr_status['statustext'] != 'Monitor function is set to None':
+                try:
+                    foo: StatusType = self._parse_zmdc_status(
+                        curr_status['statustext']
+                    )
+                    zmc.add_metric(
+                        labels=labels | {'command': foo[0]}, value=foo[1]
+                    )
+                    zmc_pid.add_metric(
+                        labels=labels | {'command': foo[0]}, value=foo[2]
+                    )
+                except Exception as ex:
+                    logger.error(
+                        'Error parsing monitor %s status string "%s": %s',
+                        labels, curr_status['statustext'], ex,
+                        exc_info=True
+                    )
             enabled.add_metric(
                 labels=labels, value=1 if m.enabled() else 0
             )
@@ -323,7 +345,7 @@ class ZmExporter:
                     m.name(), m.monitor['Monitor_Status']['Status']
                 )
             connected.add_metric(
-                labels=labels,
+                labels=labels | {'status': m.monitor['Monitor_Status']['Status']},
                 value=1 if m.monitor['Monitor_Status']['Status'] == 'Connected'
                 else 0
             )
@@ -359,9 +381,65 @@ class ZmExporter:
         yield from [
             info, event_count, enabled, function, connected, capture_fps,
             analysis_fps, capture_bw, event_count, event_disk_space,
-            archived_event_count, archived_event_disk_space
+            archived_event_count, archived_event_disk_space, zmc, zmc_pid
         ]
         yield from int_metrics.values()
+
+    def _do_monitor_shm(self) -> Generator[Metric, None, None]:
+        int_fields: List[str] = [
+            'action', 'audio_channels', 'audio_frequency', 'imagesize',
+            'last_event', 'last_frame_score', 'last_read_index',
+            'last_write_index', 'state'
+        ]
+        bool_fields: List[str] = ['active', 'format', 'signal']
+        ts_fields: List[str] = [
+            'heartbeat_time', 'last_read_time', 'last_write_time',
+            'startup_time'
+        ]
+        metrics: Dict[str, LabeledGaugeMetricFamily] = {}
+        for i in int_fields + bool_fields:
+            metrics[i] = LabeledGaugeMetricFamily(
+                f'zm_monitor_mmap_{i}',
+                f'ZM Monitor MMAP field {i}'
+            )
+        for i in ts_fields:
+            metrics[i] = LabeledGaugeMetricFamily(
+                f'zm_monitor_mmap_{i}_age_seconds',
+                f'Seconds since value of ZM Monitor MMAP field {i}'
+            )
+        logger.debug('Handling monitor mmaps...')
+        mid: int
+        mname: str
+        for mid, mname in sorted(self._monitor_id_to_name.items()):
+            shm_path: str = f'/dev/shm/zm.mmap.{mid}'
+            if not os.path.exists(shm_path):
+                logger.warning(
+                    'mmap file for Monitor %s at %s does not exist; skipping.',
+                    mid, shm_path
+                )
+                continue
+            logger.debug('Reading shared memory for monitor %s', mid)
+            now: int = int(time.time())
+            mem: ZMMemory = ZMMemory(mid=mid)
+            labels: Dict[str, str] = {'id': str(mid), 'name': mname}
+            data: dict = mem.get_shared_data()
+            mem.close()
+            for i in int_fields:
+                metrics[i].add_metric(
+                    labels=labels,
+                    value=data[i]
+                )
+            for i in bool_fields:
+                metrics[i].add_metric(
+                    labels=labels,
+                    value=1 if data[i] else 0
+                )
+            for i in ts_fields:
+                metrics[i].add_metric(
+                    labels=labels,
+                    value=now - data[i]
+                )
+        yield from metrics.values()
 
     def _do_states(self) -> Generator[Metric, None, None]:
         logger.debug('Getting ZM states')
@@ -375,12 +453,51 @@ class ZmExporter:
             metric.add_metric(
                 labels={
                     'name': s.name(),
-                    'id': s.id(),
-                    'definition': s.definition()
+                    'id': str(s.id()),
+                    'definition': str(s.definition())
                 },
                 value=1 if s.active() else 0
             )
         yield metric
+
+    def _do_zmes_websocket(self) -> Generator[Metric, None, None]:
+        wsurl: Optional[str] = os.environ.get('ZMES_WEBSOCKET_URL')
+        if not wsurl:
+            logger.debug(
+                'ZMES_WEBSOCKET_URL not set; not checking websocket server'
+            )
+            return
+        start = time.time()
+        try:
+            logger.debug('Connecting to websocket server at: %s', wsurl)
+            ws = create_connection(wsurl, timeout=10)
+            ws.send('{"event":"control","data":{"type":"version"}}')
+            val = ws.recv()
+            ws.close()
+            data = json.loads(val)
+            logger.debug('Websocket response: %s', data)
+            duration = time.time() - start
+            assert data['status'] == 'Success'
+            yield GaugeMetricFamily(
+                'zm_zmes_websocket_response_time_seconds',
+                'ZMES websocket server response time to '
+                'version request, and status response as a label',
+                value=duration,
+                labels={'status': data['status']}
+            )
+        except Exception as ex:
+            logger.warning(
+                'Error connecting to websocket server at %s: %s',
+                wsurl, ex, exc_info=True
+            )
+            duration = time.time() - start
+            yield GaugeMetricFamily(
+                'zm_zmes_websocket_response_time_seconds',
+                'ZMES websocket server response time to '
+                'version request, and status response as a label',
+                value=duration,
+                labels={'status': 'Exception'}
+            )
 
 
 def _get_best_family(address, port):

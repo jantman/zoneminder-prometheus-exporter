@@ -15,6 +15,7 @@ If you are also running ZoneMinder itself inside Docker, i.e. with [my docker-zo
 ```
 docker run -p 8080:8080 \
     -e ZM_API_URL=http://zm/api \
+    -e ZMES_WEBSOCKET_URL=ws://zm:9000 \
     jantman/zoneminder-prometheus-exporter:latest
 ```
 
@@ -26,10 +27,17 @@ docker run -p 8080:8080 \
 ### Environment Variables
 
 * `ZM_API_URL` (**required**) - ZoneMinder API URL, e.g. `http://zmhost/zm/api`
+* `ZMES_WEBSOCKET_URL` (*optional*) - ZMES Websocket URL, if you also want to test connectivity to that
 
 ### Debugging
 
 For debugging, append `-vv` to your `docker run` command, to run the entrypoint with debug-level logging.
+
+## Metrics Exposed and Example Output
+
+```
+TBD
+```
 
 ## Development
 
