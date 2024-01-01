@@ -217,7 +217,7 @@ class ZmExporter:
         ).list()
         logger.debug('Monitors: %s', [x.get() for x in monitors])
         info = InfoMetricFamily(
-            'zm_monitor_info', 'Information about a monitor',
+            'zm_monitor', 'Information about a monitor',
         )
         zmc = LabeledGaugeMetricFamily(
             'zm_monitor_zmc_uptime_seconds',
