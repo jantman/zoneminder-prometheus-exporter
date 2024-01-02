@@ -30,7 +30,11 @@ docker run -p 8080:8080 \
 * `ZM_API_URL` (**required**) - ZoneMinder API URL, e.g. `http://zmhost/zm/api`
 * `ZMES_WEBSOCKET_URL` (*optional*) - ZMES Websocket URL, if you also want to test connectivity to that
 
-### Debugging
+## Grafana Dashboard
+
+A Grafana dashboard for the most important metrics can be found in [grafana-dashboard.json](grafana-dashboard.json).
+
+## Debugging
 
 For debugging, append `-vv` to your `docker run` command, to run the entrypoint with debug-level logging.
 
