@@ -338,7 +338,7 @@ class ZmExporter:
             for x in int_fields:
                 int_metrics[x].add_metric(
                     labels=labels,
-                    value=m.get()[x]
+                    value=0 if m.get()[x] is None else m.get()[x]
                 )
             if m.monitor['Monitor_Status']['Status'] != 'Connected':
                 logger.warning(
@@ -363,11 +363,14 @@ class ZmExporter:
                 value=float(m.monitor['Monitor_Status']['CaptureBandwidth'])
             )
             event_count.add_metric(
-                labels=labels, value=m.monitor['Event_Summary']['TotalEvents']
+                labels=labels,
+                value=0 if m.monitor['Event_Summary']['TotalEvents'] is None
+                else m.monitor['Event_Summary']['TotalEvents']
             )
             event_disk_space.add_metric(
                 labels=labels,
-                value=m.monitor['Event_Summary']['TotalEventDiskSpace']
+                value=0 if m.monitor['Event_Summary']['TotalEventDiskSpace'] is None
+                else m.monitor['Event_Summary']['TotalEventDiskSpace']
             )
             archived_event_count.add_metric(
                 labels=labels,
