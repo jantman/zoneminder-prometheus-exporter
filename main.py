@@ -384,7 +384,7 @@ class ZmExporter:
             )
         yield from [
             info, event_count, enabled, function, connected, capture_fps,
-            analysis_fps, capture_bw, event_count, event_disk_space,
+            analysis_fps, capture_bw, event_disk_space,
             archived_event_count, archived_event_disk_space, zmc, zmc_pid
         ]
         yield from int_metrics.values()

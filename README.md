@@ -135,14 +135,6 @@ zm_monitor_capture_bandwidth_bytes_per_second{id="3",name="DiningRoom"} 90941.0
 zm_monitor_capture_bandwidth_bytes_per_second{id="4",name="LivingRoom"} 117344.0
 zm_monitor_capture_bandwidth_bytes_per_second{id="5",name="BasementDoorRm"} 44970.0
 zm_monitor_capture_bandwidth_bytes_per_second{id="6",name="Cats"} 507713.0
-# HELP zm_monitor_event_count Monitor event count
-# TYPE zm_monitor_event_count gauge
-zm_monitor_event_count{id="1",name="FrontPorch"} 304.0
-zm_monitor_event_count{id="2",name="Office"} 145.0
-zm_monitor_event_count{id="3",name="DiningRoom"} 287.0
-zm_monitor_event_count{id="4",name="LivingRoom"} 38.0
-zm_monitor_event_count{id="5",name="BasementDoorRm"} 159.0
-zm_monitor_event_count{id="6",name="Cats"} 281.0
 # HELP zm_monitor_event_disk_space_bytes Monitor event disk space
 # TYPE zm_monitor_event_disk_space_bytes gauge
 zm_monitor_event_disk_space_bytes{id="1",name="FrontPorch"} 2.342862049e+010
