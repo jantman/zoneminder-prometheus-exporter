@@ -528,10 +528,17 @@ class ZmExporter:
                 continue
             logger.debug('Reading shared memory for monitor %s', mid)
             now: int = int(time.time())
-            mem: ZMMemory = ZMMemory(mid=mid)
             labels: Dict[str, str] = {'id': str(mid), 'name': mname}
-            data: dict = mem.get_shared_data()
-            mem.close()
+            try:
+                mem: ZMMemory = ZMMemory(mid=mid)
+                data: dict = mem.get_shared_data()
+                mem.close()
+            except Exception as ex:
+                logger.error(
+                    'Error reading shared memory for monitor %s: %s',
+                    mid, ex, exc_info=True
+                )
+                continue
             for i in int_fields:
                 metrics[i].add_metric(
                     labels=labels,
