@@ -11,6 +11,14 @@ jobs:
       - uses: actions/checkout@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+      - name: Set Docker tags
+        id: tags
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "tags=${{ github.repository }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${{ github.repository }}:${{ github.ref_name }},${{ github.repository }}:latest" >> "$GITHUB_OUTPUT"
+          fi
       - name: Docker Build
         uses: docker/build-push-action@v4
         with:
@@ -23,6 +31,4 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ github.sha }}
-          tags: |
-            ${{ github.repository }}:${{ github.event_name == 'pull_request' && github.sha || github.ref_name }}
-            ${{ github.repository }}:latest
+          tags: ${{ steps.tags.outputs.tags }}
