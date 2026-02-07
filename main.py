@@ -254,6 +254,42 @@ class ZmExporter:
             'zm_monitor_function',
             'Monitor function'
         )
+        capturing = LabeledStateSetMetricFamily(
+            'zm_monitor_capturing',
+            'Monitor capturing mode'
+        )
+        analysing = LabeledStateSetMetricFamily(
+            'zm_monitor_analysing',
+            'Monitor analysing mode'
+        )
+        recording = LabeledStateSetMetricFamily(
+            'zm_monitor_recording',
+            'Monitor recording mode'
+        )
+        decoding = LabeledStateSetMetricFamily(
+            'zm_monitor_decoding',
+            'Monitor decoding mode'
+        )
+        janus_enabled = LabeledGaugeMetricFamily(
+            'zm_monitor_janus_enabled',
+            'Monitor Janus streaming enabled'
+        )
+        go2rtc_enabled = LabeledGaugeMetricFamily(
+            'zm_monitor_go2rtc_enabled',
+            'Monitor Go2RTC streaming enabled'
+        )
+        rtsp2web_enabled = LabeledGaugeMetricFamily(
+            'zm_monitor_rtsp2web_enabled',
+            'Monitor RTSP2Web streaming enabled'
+        )
+        mqtt_enabled = LabeledGaugeMetricFamily(
+            'zm_monitor_mqtt_enabled',
+            'Monitor MQTT enabled'
+        )
+        onvif_event_listener = LabeledGaugeMetricFamily(
+            'zm_monitor_onvif_event_listener',
+            'Monitor ONVIF event listener enabled'
+        )
         int_fields: List[str] = [
             'DecodingEnabled', 'Width', 'Height', 'Colours', 'Palette',
             'SaveJPEGs', 'VideoWriter', 'OutputCodec', 'Brightness', 'Contrast',
@@ -298,6 +334,12 @@ class ZmExporter:
                     'RecordAudio', 'EventPrefix', 'Controllable', 'ControlId',
                     'Importance'
                 ]
+            } | {
+                camel_to_snake(x): str(m.get().get(x, ''))
+                for x in [
+                    'Capturing', 'Analysing', 'Recording',
+                    'Decoding', 'OutputCodecName'
+                ]
             } | labels
             info.add_metric(labels=list(info_vals.keys()), value=info_vals)
             curr_status = m.status()
@@ -305,7 +347,10 @@ class ZmExporter:
                 labels=labels,
                 value=1 if curr_status['status'] else 0
             )
-            if curr_status['statustext'] != 'Monitor function is set to None':
+            if curr_status['statustext'] not in (
+                'Monitor function is set to None',
+                'Monitor capturing is set to None',
+            ):
                 try:
                     foo: StatusType = self._parse_zmdc_status(
                         curr_status['statustext']
@@ -334,6 +379,61 @@ class ZmExporter:
                     ]
                 },
                 labels=labels
+            )
+            cap_val = m.get().get('Capturing', 'Unknown')
+            capturing.add_metric(
+                value={
+                    x: cap_val == x
+                    for x in ['None', 'Ondemand', 'Always']
+                },
+                labels=labels
+            )
+            ana_val = m.get().get('Analysing', 'Unknown')
+            analysing.add_metric(
+                value={
+                    x: ana_val == x
+                    for x in ['None', 'Always']
+                },
+                labels=labels
+            )
+            rec_val = m.get().get('Recording', 'Unknown')
+            recording.add_metric(
+                value={
+                    x: rec_val == x
+                    for x in ['None', 'OnMotion', 'Always']
+                },
+                labels=labels
+            )
+            dec_val = m.get().get('Decoding', 'Unknown')
+            decoding.add_metric(
+                value={
+                    x: dec_val == x
+                    for x in [
+                        'None', 'Ondemand', 'KeyFrames',
+                        'KeyFrames+Ondemand', 'Always'
+                    ]
+                },
+                labels=labels
+            )
+            janus_enabled.add_metric(
+                labels=labels,
+                value=int(m.get().get('JanusEnabled', '0'))
+            )
+            go2rtc_enabled.add_metric(
+                labels=labels,
+                value=int(m.get().get('Go2RTCEnabled', '0'))
+            )
+            rtsp2web_enabled.add_metric(
+                labels=labels,
+                value=int(m.get().get('RTSP2WebEnabled', '0'))
+            )
+            mqtt_enabled.add_metric(
+                labels=labels,
+                value=int(m.get().get('MQTT_Enabled', '0'))
+            )
+            onvif_event_listener.add_metric(
+                labels=labels,
+                value=int(m.get().get('ONVIF_Event_Listener', '0'))
             )
             for x in int_fields:
                 int_metrics[x].add_metric(
@@ -383,7 +483,11 @@ class ZmExporter:
                 else m.monitor['Event_Summary']['ArchivedEventDiskSpace']
             )
         yield from [
-            info, event_count, enabled, function, connected, capture_fps,
+            info, event_count, enabled, function,
+            capturing, analysing, recording, decoding,
+            janus_enabled, go2rtc_enabled, rtsp2web_enabled,
+            mqtt_enabled, onvif_event_listener,
+            connected, capture_fps,
             analysis_fps, capture_bw, event_disk_space,
             archived_event_count, archived_event_disk_space, zmc, zmc_pid
         ]
