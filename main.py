@@ -368,7 +368,7 @@ class ZmExporter:
                         exc_info=True
                     )
             enabled.add_metric(
-                labels=labels, value=m.get()['Enabled']
+                labels=labels, value=int(m.get()['Enabled'])
             )
             function.add_metric(
                 value={
@@ -438,7 +438,7 @@ class ZmExporter:
             for x in int_fields:
                 int_metrics[x].add_metric(
                     labels=labels,
-                    value=0 if m.get()[x] is None else m.get()[x]
+                    value=0 if m.get()[x] is None else int(m.get()[x])
                 )
             if m.monitor['Monitor_Status']['Status'] != 'Connected':
                 logger.warning(

@@ -49,13 +49,13 @@ All logic lives in `main.py`:
 ## Key Dependencies
 
 - `prometheus-client`: Prometheus metrics exposition
-- `pyzm`: ZoneMinder Python API (upstream at `github.com/ZoneMinder/pyzm`)
+- `pyzm`: ZoneMinder Python API (fork at `github.com/jantman/pyzm`, branch `zm-1.38-compat`, with ZM 1.38 shared memory struct support)
 - `websocket-client`: For ZMES WebSocket connectivity testing
 
 ## Important Notes
 
 - No authentication support for ZoneMinder currently
-- The `pyzm` dependency is installed from git (upstream ZoneMinder/pyzm), not PyPI
+- The `pyzm` dependency is installed from git (fork at jantman/pyzm, zm-1.38-compat branch), not PyPI. The fork adds ZM 1.38 shared memory struct support and fixes UnicodeDecodeError on non-UTF-8 bytes.
 - Metrics are generated on-demand per Prometheus scrape (no persistent state)
 - `camel_to_snake()` helper converts ZoneMinder's CamelCase field names to Prometheus-style snake_case metric names
 - ZM 1.38.0 splits the single `Function` field into `Capturing`/`Analysing`/`Recording` and replaces `DecodingEnabled` (boolean) with `Decoding` (5-value enum). The exporter exposes both old and new metrics for backward compatibility.
