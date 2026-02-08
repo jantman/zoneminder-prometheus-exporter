@@ -1,4 +1,4 @@
-FROM python:3.12-bookworm
+FROM python:3.14.3-trixie
 
 COPY requirements.txt /requirements.txt
 RUN pip install -r /requirements.txt

@@ -1,3 +1,3 @@
-prometheus-client==0.19.0
-git+https://github.com/jantman/pyzm.git
-websocket-client==1.7.0
+prometheus-client==0.24.1
+git+https://github.com/jantman/pyzm.git@zm-1.38-compat
+websocket-client==1.9.0
