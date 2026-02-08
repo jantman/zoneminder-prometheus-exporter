@@ -367,9 +367,17 @@ class ZmExporter:
                         labels, curr_status['statustext'], ex,
                         exc_info=True
                     )
-            enabled.add_metric(
-                labels=labels, value=int(m.get()['Enabled'])
-            )
+            # In ZM 1.38+, Enabled is always 0 and Capturing replaces it.
+            # Use Capturing != 'None' as the enabled indicator when available.
+            if m.get().get('Capturing') is not None:
+                enabled.add_metric(
+                    labels=labels,
+                    value=0 if m.get()['Capturing'] == 'None' else 1
+                )
+            else:
+                enabled.add_metric(
+                    labels=labels, value=int(m.get()['Enabled'])
+                )
             function.add_metric(
                 value={
                     x: m.function() == x

@@ -475,6 +475,16 @@ zm_daemon_check 1.0
 zm_query_time_seconds 1.4675686359405518
 ```
 
+## ZoneMinder 1.38 Changes
+
+ZoneMinder 1.38.0 introduced several breaking changes that affect this exporter:
+
+* **`Enabled` field is always 0.** ZM 1.38 replaced the single `Enabled` boolean with the `Capturing` field (`None`/`Ondemand`/`Always`). The exporter now derives `zm_monitor_enabled` from `Capturing != 'None'` when the `Capturing` field is present.
+* **`Function` split into three fields.** The single `Function` field (`Monitor`/`Modect`/`Record`/`Mocord`/`Nodect`) has been split into `Capturing`, `Analysing`, and `Recording`. The exporter exposes both the legacy `zm_monitor_function` StateSet and the new `zm_monitor_capturing`, `zm_monitor_analysing`, and `zm_monitor_recording` StateSets.
+* **`DecodingEnabled` replaced by `Decoding`.** The boolean `DecodingEnabled` has been replaced by a 5-value enum `Decoding` (`None`/`Ondemand`/`KeyFrames`/`KeyFrames+Ondemand`/`Always`). The exporter exposes both the legacy `zm_monitor_decoding_enabled` gauge and the new `zm_monitor_decoding` StateSet.
+* **New per-monitor feature flags.** ZM 1.38 adds `JanusEnabled`, `Go2RTCEnabled`, `RTSP2WebEnabled`, `MQTT_Enabled`, and `ONVIF_Event_Listener` fields, exposed as 0/1 gauge metrics.
+* **Shared memory struct format changed.** The SharedData struct grew from 760 to 872 bytes with new fields (image_count, latitude, longitude, additional bools and timestamps, janus_pin). The exporter uses a [fork of pyzm](https://github.com/jantman/pyzm/tree/zm-1.38-compat) that auto-detects the struct version.
+
 ## Development
 
 Clone the repo, then in your clone:
