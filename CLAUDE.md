@@ -22,7 +22,7 @@ pip install -r requirements.txt
 ./main.py -vv          # DEBUG-level logging
 ```
 
-Requires `ZM_API_URL` env var (e.g., `http://zmhost/zm/api`). Optional: `ZMES_WEBSOCKET_URL` for WebSocket connectivity testing.
+Requires `ZM_API_URL` env var (e.g., `http://zmhost/zm/api`). Optional: `ZM_USER` and `ZM_PASSWORD` for authentication (if ZoneMinder has `OPT_USE_AUTH` enabled), and `ZMES_WEBSOCKET_URL` for WebSocket connectivity testing.
 
 Must run on the same machine as ZoneMinder (needs shared memory access via `/dev/shm/`).
 
@@ -54,7 +54,7 @@ All logic lives in `main.py`:
 
 ## Important Notes
 
-- No authentication support for ZoneMinder currently
+- Authentication support: Supports optional ZoneMinder authentication via `ZM_USER` and `ZM_PASSWORD` environment variables (both must be provided together)
 - The `pyzm` dependency is installed from git (fork at jantman/pyzm, zm-1.38-compat branch), not PyPI. The fork adds ZM 1.38 shared memory struct support and fixes UnicodeDecodeError on non-UTF-8 bytes.
 - Metrics are generated on-demand per Prometheus scrape (no persistent state)
 - `camel_to_snake()` helper converts ZoneMinder's CamelCase field names to Prometheus-style snake_case metric names

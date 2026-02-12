@@ -16,18 +16,23 @@ If you are also running ZoneMinder itself inside Docker, i.e. with [my docker-zo
 docker run -p 8080:8080 \
     -e ZM_API_URL=http://zm/api \
     -e ZMES_WEBSOCKET_URL=ws://zm:9000 \
+    -e ZM_USER=myuser \
+    -e ZM_PASSWORD=mypassword \
     --ipc="container:zm" \
     jantman/zoneminder-prometheus-exporter:latest
 ```
 
+Note: `ZM_USER` and `ZM_PASSWORD` are only needed if your ZoneMinder instance has authentication enabled (`OPT_USE_AUTH`).
+
 ### Known Issues and Limitations
 
-* This does not currently support any sort of authentication for ZoneMinder. I don't use the built-in auth.
 * I'm using the [pyzm](https://github.com/ZoneMinder/pyzm) package since it's already written. It is emphatically non-Pythonic, so if you attempt to use the [main.py](main.py) python module on its own or do any development work, be aware of that. This is up to and including ignoring Python's built-in `logging` library and implementing its own non-compatible logging layer. There's also a lot of incorrect documentation, especially about types. Be warned.
 
 ### Environment Variables
 
 * `ZM_API_URL` (**required**) - ZoneMinder API URL, e.g. `http://zmhost/zm/api`
+* `ZM_USER` (*optional*) - ZoneMinder username for authentication. Required if ZoneMinder has `OPT_USE_AUTH` enabled. Must be provided together with `ZM_PASSWORD`.
+* `ZM_PASSWORD` (*optional*) - ZoneMinder password for authentication. Required if ZoneMinder has `OPT_USE_AUTH` enabled. Must be provided together with `ZM_USER`.
 * `ZMES_WEBSOCKET_URL` (*optional*) - ZMES Websocket URL, if you also want to test connectivity to that
 
 ## Grafana Dashboard
