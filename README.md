@@ -24,6 +24,8 @@ docker run -p 8080:8080 \
 
 Note: `ZM_USER` and `ZM_PASSWORD` are only needed if your ZoneMinder instance has authentication enabled (`OPT_USE_AUTH`).
 
+**Security Note:** Passing credentials via `-e` flags on the command line may expose them in process listings and Docker logs. For production use, consider using [Docker secrets](https://docs.docker.com/engine/swarm/secrets/), [environment files](https://docs.docker.com/compose/environment-variables/set-environment-variables/#use-the-env_file-attribute), or a secrets management solution.
+
 ### Known Issues and Limitations
 
 * I'm using the [pyzm](https://github.com/ZoneMinder/pyzm) package since it's already written. It is emphatically non-Pythonic, so if you attempt to use the [main.py](main.py) python module on its own or do any development work, be aware of that. This is up to and including ignoring Python's built-in `logging` library and implementing its own non-compatible logging layer. There's also a lot of incorrect documentation, especially about types. Be warned.
