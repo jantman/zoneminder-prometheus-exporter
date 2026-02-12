@@ -33,7 +33,7 @@ import socket
 import time
 import re
 from datetime import datetime
-from typing import Generator, List, Dict, Optional, Tuple
+from typing import Generator, List, Dict, Optional, Tuple, Any
 import json
 
 from wsgiref.simple_server import make_server, WSGIServer
@@ -163,14 +163,14 @@ class ZmExporter:
         logger.info('Connecting to ZM API at: %s', self._api_url)
         
         # Build options dict for ZMApi
-        api_options: Dict[str, str] = {'apiurl': self._api_url}
+        api_options: Dict[str, Any] = {'apiurl': self._api_url}
         
         # Add optional authentication credentials if provided
         zm_user: Optional[str] = os.environ.get('ZM_USER')
         zm_password: Optional[str] = os.environ.get('ZM_PASSWORD')
         
         if zm_user and zm_password:
-            logger.info('Using ZoneMinder authentication')
+            logger.debug('Using ZoneMinder authentication')
             api_options['user'] = zm_user
             api_options['password'] = zm_password
         elif zm_user or zm_password:
@@ -179,7 +179,7 @@ class ZmExporter:
                 'Only one was provided; proceeding without authentication.'
             )
         else:
-            logger.info('No authentication credentials provided; connecting without auth')
+            logger.debug('No authentication credentials provided; connecting without auth')
         
         self._api: ZMApi = ZMApi(options=api_options)
         logger.debug('Connected to ZM')
