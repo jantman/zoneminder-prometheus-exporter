@@ -170,7 +170,7 @@ class ZmExporter:
         zm_password: Optional[str] = os.environ.get('ZM_PASSWORD')
         
         if zm_user and zm_password:
-            logger.info('Using ZoneMinder authentication with user: %s', zm_user)
+            logger.info('Using ZoneMinder authentication')
             api_options['user'] = zm_user
             api_options['password'] = zm_password
         elif zm_user or zm_password:
