@@ -338,6 +338,16 @@ class ZmExporter:
         self._monitor_id_to_name: Dict[int, str] = {}
         m: Monitor
         for m in monitors:
+            # ZoneMinder soft-deletes monitors: a deleted monitor is flagged
+            # Deleted=true and keeps being returned by the API (with all-null
+            # Monitor_Status) until a later cleanup pass removes the row. Skip
+            # these entirely so we don't emit stale metrics or choke on nulls.
+            if m.get().get('Deleted'):
+                logger.debug(
+                    'Skipping deleted monitor %s (%s)',
+                    m.get()['Id'], m.get()['Name']
+                )
+                continue
             labels: Dict[str, str] = {
                 'id': str(m.get()['Id']),
                 'name': m.get()['Name']
@@ -363,14 +373,19 @@ class ZmExporter:
                 labels=labels,
                 value=1 if curr_status['status'] else 0
             )
-            if curr_status['statustext'] not in (
-                'Monitor function is set to None',
-                'Monitor capturing is set to None',
+            statustext: str = curr_status['statustext'] or ''
+            # Skip parsing for expected non-running states: a monitor with
+            # capturing disabled, or one whose daemon isn't running (e.g. a
+            # monitor that was just deleted but still appears in the API).
+            if (
+                statustext not in (
+                    'Monitor function is set to None',
+                    'Monitor capturing is set to None',
+                )
+                and not statustext.endswith('not running')
             ):
                 try:
-                    foo: StatusType = self._parse_zmdc_status(
-                        curr_status['statustext']
-                    )
+                    foo: StatusType = self._parse_zmdc_status(statustext)
                     zmc.add_metric(
                         labels=labels | {'command': foo[0]}, value=foo[1]
                     )
@@ -380,7 +395,7 @@ class ZmExporter:
                 except Exception as ex:
                     logger.error(
                         'Error parsing monitor %s status string "%s": %s',
-                        labels, curr_status['statustext'], ex,
+                        labels, statustext, ex,
                         exc_info=True
                     )
             # In ZM 1.38+, Enabled is always 0 and Capturing replaces it.
@@ -464,27 +479,30 @@ class ZmExporter:
                     labels=labels,
                     value=0 if m.get()[x] is None else int(m.get()[x])
                 )
-            if m.monitor['Monitor_Status']['Status'] != 'Connected':
+            # Monitor_Status (and its fields) can be None when a monitor's
+            # capture daemon isn't running, e.g. a monitor that was just
+            # deleted but still appears in the API for one scrape.
+            mon_status: dict = m.monitor.get('Monitor_Status') or {}
+            status_str: str = mon_status.get('Status') or 'Unknown'
+            if status_str != 'Connected':
                 logger.warning(
-                    'Monitor %s Status is %s',
-                    m.name(), m.monitor['Monitor_Status']['Status']
+                    'Monitor %s Status is %s', m.name(), status_str
                 )
             connected.add_metric(
-                labels=labels | {'status': m.monitor['Monitor_Status']['Status']},
-                value=1 if m.monitor['Monitor_Status']['Status'] == 'Connected'
-                else 0
+                labels=labels | {'status': status_str},
+                value=1 if status_str == 'Connected' else 0
             )
             capture_fps.add_metric(
                 labels=labels,
-                value=float(m.monitor['Monitor_Status']['CaptureFPS'])
+                value=float(mon_status.get('CaptureFPS') or 0)
             )
             analysis_fps.add_metric(
                 labels=labels,
-                value=float(m.monitor['Monitor_Status']['AnalysisFPS'])
+                value=float(mon_status.get('AnalysisFPS') or 0)
             )
             capture_bw.add_metric(
                 labels=labels,
-                value=float(m.monitor['Monitor_Status']['CaptureBandwidth'])
+                value=float(mon_status.get('CaptureBandwidth') or 0)
             )
             event_count.add_metric(
                 labels=labels,
