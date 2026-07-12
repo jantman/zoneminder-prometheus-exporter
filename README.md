@@ -36,6 +36,26 @@ Note: `ZM_USER` and `ZM_PASSWORD` are only needed if your ZoneMinder instance ha
 * `ZM_USER` (*optional*) - ZoneMinder username for authentication. Required if ZoneMinder has `OPT_USE_AUTH` enabled. Must be provided together with `ZM_PASSWORD`.
 * `ZM_PASSWORD` (*optional*) - ZoneMinder password for authentication. Required if ZoneMinder has `OPT_USE_AUTH` enabled. Must be provided together with `ZM_USER`.
 * `ZMES_WEBSOCKET_URL` (*optional*) - ZMES Websocket URL, if you also want to test connectivity to that
+* `ZM_EVENT_WINDOW_SECONDS` (*optional*, default `900`) - Rolling window, in seconds, over which the `zm_monitor_recent_*` event metrics are aggregated (see [Recording-persistence metrics](#recording-persistence-metrics)).
+* `ZM_EVENT_GRACE_SECONDS` (*optional*, default `120`) - Events that ended more recently than this are excluded from the windowed aggregates, because ZoneMinder may not have finished computing their `DiskSpace` yet; without this grace period a just-ended healthy event would momentarily read as zero-size.
+* `ZM_EVENT_QUERY_LIMIT` (*optional*, default `500`) - Maximum number of events fetched per scrape. Keep this comfortably above the number of events your busiest camera set produces within the query window (`ZM_EVENT_WINDOW_SECONDS` + 15 min); pyzm sorts newest-first and stops at this limit, so too low a value silently truncates the window and can drop quiet monitors entirely.
+
+### Recording-persistence metrics
+
+Every `zm_monitor_*` metric other than these proves that *capture* is alive (the daemon is running, grabbing frames into the shared-memory buffer). None of them prove that events actually reached *disk* -- a failure where capture keeps working but writes fail (e.g. a detached/unwritable storage volume) leaves every capture metric green while nothing is recorded.
+
+These metrics close that gap by inspecting recently-*ended* events:
+
+* `zm_monitor_last_event_disk_space_bytes` - DiskSpace of the newest ended event. Combined with the age metric below, this is the core signal: *the most recent finished recording saved N bytes.*
+* `zm_monitor_last_event_end_time_age_seconds` - seconds since that event ended (a freshness gate; a camera producing no events simply has no series).
+* `zm_monitor_last_event_frames` - frame count of the newest ended event.
+* `zm_monitor_last_event_id` - ID of the newest ended event. Event IDs are monotonic, so this is safe to use with `increase()` as an event-creation rate.
+* `zm_monitor_recent_ended_event_count` - events that ended in the window (denominator for a zero-size ratio).
+* `zm_monitor_recent_ended_zero_size_event_count` - events that ended in the window having saved zero bytes to disk.
+* `zm_monitor_recent_event_disk_space_bytes` - sum of DiskSpace over events that ended in the window (recording throughput).
+* `zm_monitor_recent_min_event_disk_space_bytes` / `zm_monitor_recent_min_event_frames` - smallest event size / frame count in the window, to surface partial or truncated writes that a `== 0` check would miss.
+
+The windowed aggregates exclude still-open events and purged events (`Emptied=1`, whose files are legitimately gone). **The `recent_*` metrics are sliding-window gauges computed at scrape time -- read them directly; do not apply `rate()`/`increase()`, which would double-count across overlapping windows.** Only `zm_monitor_last_event_id` is a monotonic value suitable for `increase()`.
 
 ## Grafana Dashboard
 
@@ -356,6 +376,78 @@ zm_monitor_zone_count{id="3",name="DiningRoom"} 1.0
 zm_monitor_zone_count{id="4",name="LivingRoom"} 1.0
 zm_monitor_zone_count{id="5",name="BasementDoorRm"} 1.0
 zm_monitor_zone_count{id="6",name="Cats"} 1.0
+# HELP zm_monitor_last_event_disk_space_bytes DiskSpace in bytes of the most recent ended event for this monitor
+# TYPE zm_monitor_last_event_disk_space_bytes gauge
+zm_monitor_last_event_disk_space_bytes{id="1",name="FrontPorch"} 3.87e+06
+zm_monitor_last_event_disk_space_bytes{id="2",name="Office"} 2.14e+06
+zm_monitor_last_event_disk_space_bytes{id="3",name="DiningRoom"} 5.02e+06
+zm_monitor_last_event_disk_space_bytes{id="4",name="LivingRoom"} 1.63e+06
+zm_monitor_last_event_disk_space_bytes{id="5",name="BasementDoorRm"} 4.41e+06
+zm_monitor_last_event_disk_space_bytes{id="6",name="Cats"} 2.29e+06
+# HELP zm_monitor_last_event_end_time_age_seconds Seconds since the most recent ended event for this monitor ended
+# TYPE zm_monitor_last_event_end_time_age_seconds gauge
+zm_monitor_last_event_end_time_age_seconds{id="1",name="FrontPorch"} 42.0
+zm_monitor_last_event_end_time_age_seconds{id="2",name="Office"} 315.0
+zm_monitor_last_event_end_time_age_seconds{id="3",name="DiningRoom"} 12.0
+zm_monitor_last_event_end_time_age_seconds{id="4",name="LivingRoom"} 588.0
+zm_monitor_last_event_end_time_age_seconds{id="5",name="BasementDoorRm"} 7.0
+zm_monitor_last_event_end_time_age_seconds{id="6",name="Cats"} 133.0
+# HELP zm_monitor_last_event_frames Frame count of the most recent ended event for this monitor
+# TYPE zm_monitor_last_event_frames gauge
+zm_monitor_last_event_frames{id="1",name="FrontPorch"} 152.0
+zm_monitor_last_event_frames{id="2",name="Office"} 101.0
+zm_monitor_last_event_frames{id="3",name="DiningRoom"} 151.0
+zm_monitor_last_event_frames{id="4",name="LivingRoom"} 102.0
+zm_monitor_last_event_frames{id="5",name="BasementDoorRm"} 300.0
+zm_monitor_last_event_frames{id="6",name="Cats"} 88.0
+# HELP zm_monitor_last_event_id Event ID of the most recent ended event for this monitor (monotonic; safe to use with increase() as an event-creation rate)
+# TYPE zm_monitor_last_event_id gauge
+zm_monitor_last_event_id{id="1",name="FrontPorch"} 68302.0
+zm_monitor_last_event_id{id="2",name="Office"} 68291.0
+zm_monitor_last_event_id{id="3",name="DiningRoom"} 68305.0
+zm_monitor_last_event_id{id="4",name="LivingRoom"} 68230.0
+zm_monitor_last_event_id{id="5",name="BasementDoorRm"} 68306.0
+zm_monitor_last_event_id{id="6",name="Cats"} 68299.0
+# HELP zm_monitor_recent_ended_event_count Count of events that ended in the last 900s (excludes still-open and purged events; windowed gauge, do not rate())
+# TYPE zm_monitor_recent_ended_event_count gauge
+zm_monitor_recent_ended_event_count{id="1",name="FrontPorch"} 3.0
+zm_monitor_recent_ended_event_count{id="2",name="Office"} 1.0
+zm_monitor_recent_ended_event_count{id="3",name="DiningRoom"} 5.0
+zm_monitor_recent_ended_event_count{id="4",name="LivingRoom"} 2.0
+zm_monitor_recent_ended_event_count{id="5",name="BasementDoorRm"} 8.0
+zm_monitor_recent_ended_event_count{id="6",name="Cats"} 2.0
+# HELP zm_monitor_recent_ended_zero_size_event_count Count of events that ended in the last 900s having saved zero bytes to disk (windowed gauge, do not rate())
+# TYPE zm_monitor_recent_ended_zero_size_event_count gauge
+zm_monitor_recent_ended_zero_size_event_count{id="1",name="FrontPorch"} 0.0
+zm_monitor_recent_ended_zero_size_event_count{id="2",name="Office"} 0.0
+zm_monitor_recent_ended_zero_size_event_count{id="3",name="DiningRoom"} 0.0
+zm_monitor_recent_ended_zero_size_event_count{id="4",name="LivingRoom"} 0.0
+zm_monitor_recent_ended_zero_size_event_count{id="5",name="BasementDoorRm"} 0.0
+zm_monitor_recent_ended_zero_size_event_count{id="6",name="Cats"} 0.0
+# HELP zm_monitor_recent_event_disk_space_bytes Sum of DiskSpace in bytes over events that ended in the last 900s -- recording throughput (windowed gauge, do not rate())
+# TYPE zm_monitor_recent_event_disk_space_bytes gauge
+zm_monitor_recent_event_disk_space_bytes{id="1",name="FrontPorch"} 1.185e+07
+zm_monitor_recent_event_disk_space_bytes{id="2",name="Office"} 2.14e+06
+zm_monitor_recent_event_disk_space_bytes{id="3",name="DiningRoom"} 2.431e+07
+zm_monitor_recent_event_disk_space_bytes{id="4",name="LivingRoom"} 3.42e+06
+zm_monitor_recent_event_disk_space_bytes{id="5",name="BasementDoorRm"} 3.512e+07
+zm_monitor_recent_event_disk_space_bytes{id="6",name="Cats"} 4.58e+06
+# HELP zm_monitor_recent_min_event_disk_space_bytes Smallest DiskSpace in bytes among events that ended in the last 900s -- surfaces partial/truncated writes (windowed gauge)
+# TYPE zm_monitor_recent_min_event_disk_space_bytes gauge
+zm_monitor_recent_min_event_disk_space_bytes{id="1",name="FrontPorch"} 3.87e+06
+zm_monitor_recent_min_event_disk_space_bytes{id="2",name="Office"} 2.14e+06
+zm_monitor_recent_min_event_disk_space_bytes{id="3",name="DiningRoom"} 4.12e+06
+zm_monitor_recent_min_event_disk_space_bytes{id="4",name="LivingRoom"} 1.63e+06
+zm_monitor_recent_min_event_disk_space_bytes{id="5",name="BasementDoorRm"} 3.98e+06
+zm_monitor_recent_min_event_disk_space_bytes{id="6",name="Cats"} 2.29e+06
+# HELP zm_monitor_recent_min_event_frames Smallest frame count among events that ended in the last 900s -- surfaces truncated events (windowed gauge)
+# TYPE zm_monitor_recent_min_event_frames gauge
+zm_monitor_recent_min_event_frames{id="1",name="FrontPorch"} 121.0
+zm_monitor_recent_min_event_frames{id="2",name="Office"} 101.0
+zm_monitor_recent_min_event_frames{id="3",name="DiningRoom"} 130.0
+zm_monitor_recent_min_event_frames{id="4",name="LivingRoom"} 95.0
+zm_monitor_recent_min_event_frames{id="5",name="BasementDoorRm"} 151.0
+zm_monitor_recent_min_event_frames{id="6",name="Cats"} 76.0
 # HELP zm_state Monitor state
 # TYPE zm_state gauge
 zm_state{definition="None",id="1",name="default"} 1.0

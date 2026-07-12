@@ -32,7 +32,7 @@ import logging
 import socket
 import time
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Generator, List, Dict, Optional, Tuple, Any
 import json
 
@@ -141,6 +141,114 @@ class InvalidStatusStringException(Exception):
 StatusType = Tuple[str, float, int]
 
 
+def _parse_zm_datetime(value: Optional[str]) -> Optional[datetime]:
+    """Parse a ZoneMinder events-API datetime string ('YYYY-MM-DD HH:MM:SS')
+    into a UTC-aware ``datetime``, or ``None`` if unset/unparseable.
+
+    The ZoneMinder API serializes event StartDateTime/EndDateTime in **UTC**,
+    regardless of the server's local timezone. We therefore attach UTC tzinfo
+    and callers must compare against ``datetime.now(timezone.utc)`` -- comparing
+    against a naive local ``datetime.now()`` would be wrong by the local UTC
+    offset (e.g. events appearing hours in the future). Note this differs from
+    :meth:`ZmExporter._parse_zmdc_status`, whose daemon-status strings are in
+    local time.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.strptime(
+            value, '%Y-%m-%d %H:%M:%S'
+        ).replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def _event_int(raw: Dict[str, Any], key: str) -> int:
+    """Return ``raw[key]`` as an int, treating None/''/unparseable as 0.
+
+    ZM's JSON returns numeric fields (DiskSpace, Frames, Emptied) as strings,
+    and DiskSpace is None/'' for events whose size ZM has not computed yet.
+    """
+    val = raw.get(key)
+    if val in (None, ''):
+        return 0
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return 0
+
+
+def aggregate_events(
+    raw_events: List[Dict[str, Any]],
+    monitor_ids: List[int],
+    now: datetime,
+    window_seconds: int,
+    grace_seconds: int,
+) -> Dict[int, Dict[str, Any]]:
+    """Aggregate raw ZM event dicts (``Event.get()`` output) into per-monitor
+    recording-persistence facts. Pure function -- no I/O -- so it is unit
+    testable without a live ZoneMinder.
+
+    For each monitor this computes:
+
+    * ``last_event`` -- the newest *ended* event ``(id, end_dt, disk, frames)``,
+      used as a freshness gate (a monitor that has not produced a completed
+      event recently simply has no ``last_event``).
+    * windowed aggregates over events that ended between ``grace_seconds`` and
+      ``window_seconds`` ago, excluding still-open events (no ``EndDateTime``)
+      and purged events (``Emptied=1``, whose files are legitimately gone):
+      ``ended_count``, ``zero_size_count``, ``disk_space_sum``,
+      ``min_disk_space``, ``min_frames``.
+
+    Windowed counters default to 0 for every id in ``monitor_ids`` so callers
+    can emit a series for every monitor even when it had no recent events.
+    """
+    def _blank() -> Dict[str, Any]:
+        return {
+            'ended_count': 0,
+            'zero_size_count': 0,
+            'disk_space_sum': 0,
+            'min_disk_space': None,
+            'min_frames': None,
+            'last_event': None,
+        }
+
+    agg: Dict[int, Dict[str, Any]] = {mid: _blank() for mid in monitor_ids}
+
+    for raw in raw_events:
+        try:
+            mid = int(raw['MonitorId'])
+            eid = int(raw['Id'])
+        except (KeyError, ValueError, TypeError):
+            continue
+        end_dt = _parse_zm_datetime(raw.get('EndDateTime'))
+        if end_dt is None:
+            # still-open / in-progress event: no final size yet -> ignore
+            continue
+        m = agg.setdefault(mid, _blank())
+        disk = _event_int(raw, 'DiskSpace')
+        frames = _event_int(raw, 'Frames')
+        # newest ended event by id, regardless of window -> freshness gate
+        prev = m['last_event']
+        if prev is None or eid > prev[0]:
+            m['last_event'] = (eid, end_dt, disk, frames)
+        # windowed aggregates: ended in [grace, window] ago, not purged
+        end_age = (now - end_dt).total_seconds()
+        if not (grace_seconds <= end_age <= window_seconds):
+            continue
+        if _event_int(raw, 'Emptied') == 1:
+            continue
+        m['ended_count'] += 1
+        m['disk_space_sum'] += disk
+        if disk == 0:
+            m['zero_size_count'] += 1
+        if m['min_disk_space'] is None or disk < m['min_disk_space']:
+            m['min_disk_space'] = disk
+        if m['min_frames'] is None or frames < m['min_frames']:
+            m['min_frames'] = frames
+    return agg
+
+
 class ZmExporter:
 
     STATUS_RE: re.Pattern = re.compile(
@@ -181,12 +289,29 @@ class ZmExporter:
         logger.debug('Connected to ZM')
         self.query_time: float = 0.0
         self._monitor_id_to_name: Dict[int, str] = {}
+        # Recording-persistence event metrics: aggregate over events that ended
+        # in the last ZM_EVENT_WINDOW_SECONDS (default 15m), ignoring the most
+        # recent ZM_EVENT_GRACE_SECONDS (default 2m) so events whose DiskSpace
+        # ZM has not finished computing yet do not read as zero-size failures.
+        # ZM_EVENT_QUERY_LIMIT bounds how many events a single scrape fetches;
+        # keep it comfortably above the busiest window so results are not
+        # truncated (pyzm sorts newest-first and stops at the limit).
+        self._event_window_seconds: int = int(
+            os.environ.get('ZM_EVENT_WINDOW_SECONDS', '900')
+        )
+        self._event_grace_seconds: int = int(
+            os.environ.get('ZM_EVENT_GRACE_SECONDS', '120')
+        )
+        self._event_query_limit: int = int(
+            os.environ.get('ZM_EVENT_QUERY_LIMIT', '500')
+        )
 
     def collect(self) -> Generator[Metric, None, None]:
         logger.debug('Beginning collection')
         qstart = time.time()
         for meth in [
             self._do_monitors,
+            self._do_events,
             self._do_states,
             self._do_monitor_shm,
             self._do_zmes_websocket,
@@ -534,6 +659,114 @@ class ZmExporter:
             archived_event_count, archived_event_disk_space, zmc, zmc_pid
         ]
         yield from int_metrics.values()
+
+    def _do_events(self) -> Generator[Metric, None, None]:
+        """Recording-persistence metrics derived from recently-ended events.
+
+        Every existing monitor metric proves *capture* is alive; these prove
+        events actually reached *disk*. Queries events over a window slightly
+        wider than ``ZM_EVENT_WINDOW_SECONDS`` (ZM filters by start time, so we
+        pad to still catch long events that ended inside the window), then
+        aggregates per monitor via :func:`aggregate_events`.
+        """
+        window: int = self._event_window_seconds
+        grace: int = self._event_grace_seconds
+        # pad the query back beyond the window (ZM filters by StartTime; +15m
+        # covers ZM's default max event section length so long events that
+        # ended inside the window are still returned).
+        query_minutes: int = (window // 60) + 15
+        options: Dict[str, Any] = {
+            'from': f'{query_minutes} minutes ago',
+            'limit': self._event_query_limit,
+        }
+        logger.debug('Querying events with options: %s', options)
+        try:
+            raw_events: List[Dict[str, Any]] = [
+                e.get() for e in self._api.events(options=options).list()
+            ]
+        except Exception as ex:
+            logger.error('Error querying events: %s', ex, exc_info=True)
+            return
+        logger.debug('Fetched %d events for window', len(raw_events))
+        # ZM's events API returns event datetimes in UTC (see
+        # _parse_zm_datetime), so compare against a UTC-aware now.
+        now: datetime = datetime.now(timezone.utc)
+        agg: Dict[int, Dict[str, Any]] = aggregate_events(
+            raw_events, list(self._monitor_id_to_name.keys()),
+            now, window, grace
+        )
+
+        last_disk = LabeledGaugeMetricFamily(
+            'zm_monitor_last_event_disk_space_bytes',
+            'DiskSpace in bytes of the most recent ended event for this monitor'
+        )
+        last_age = LabeledGaugeMetricFamily(
+            'zm_monitor_last_event_end_time_age_seconds',
+            'Seconds since the most recent ended event for this monitor ended'
+        )
+        last_frames = LabeledGaugeMetricFamily(
+            'zm_monitor_last_event_frames',
+            'Frame count of the most recent ended event for this monitor'
+        )
+        last_id = LabeledGaugeMetricFamily(
+            'zm_monitor_last_event_id',
+            'Event ID of the most recent ended event for this monitor '
+            '(monotonic; safe to use with increase() as an event-creation rate)'
+        )
+        ended_count = LabeledGaugeMetricFamily(
+            'zm_monitor_recent_ended_event_count',
+            f'Count of events that ended in the last {window}s (excludes '
+            f'still-open and purged events; windowed gauge, do not rate())'
+        )
+        zero_count = LabeledGaugeMetricFamily(
+            'zm_monitor_recent_ended_zero_size_event_count',
+            f'Count of events that ended in the last {window}s having saved '
+            f'zero bytes to disk (windowed gauge, do not rate())'
+        )
+        disk_sum = LabeledGaugeMetricFamily(
+            'zm_monitor_recent_event_disk_space_bytes',
+            f'Sum of DiskSpace in bytes over events that ended in the last '
+            f'{window}s -- recording throughput (windowed gauge, do not rate())'
+        )
+        min_disk = LabeledGaugeMetricFamily(
+            'zm_monitor_recent_min_event_disk_space_bytes',
+            f'Smallest DiskSpace in bytes among events that ended in the last '
+            f'{window}s -- surfaces partial/truncated writes (windowed gauge)'
+        )
+        min_frames = LabeledGaugeMetricFamily(
+            'zm_monitor_recent_min_event_frames',
+            f'Smallest frame count among events that ended in the last '
+            f'{window}s -- surfaces truncated events (windowed gauge)'
+        )
+
+        for mid, name in sorted(self._monitor_id_to_name.items()):
+            m: Optional[Dict[str, Any]] = agg.get(mid)
+            if not m:
+                continue
+            labels: Dict[str, str] = {'id': str(mid), 'name': name}
+            # windowed metrics: always emit (0 default) so a series exists for
+            # every monitor and "count > 0" alerts have something to evaluate.
+            ended_count.add_metric(labels=labels, value=m['ended_count'])
+            zero_count.add_metric(labels=labels, value=m['zero_size_count'])
+            disk_sum.add_metric(labels=labels, value=m['disk_space_sum'])
+            if m['min_disk_space'] is not None:
+                min_disk.add_metric(labels=labels, value=m['min_disk_space'])
+            if m['min_frames'] is not None:
+                min_frames.add_metric(labels=labels, value=m['min_frames'])
+            # point metrics: only when there is a recent ended event, so a
+            # quiet camera (no events) does not emit a stale/false series.
+            if m['last_event'] is not None:
+                eid, end_dt, disk, frames = m['last_event']
+                last_disk.add_metric(labels=labels, value=disk)
+                last_age.add_metric(
+                    labels=labels, value=(now - end_dt).total_seconds()
+                )
+                last_frames.add_metric(labels=labels, value=frames)
+                last_id.add_metric(labels=labels, value=eid)
+        yield from [
+            last_disk, last_age, last_frames, last_id,
+            ended_count, zero_count, disk_sum, min_disk, min_frames,
+        ]
 
     def _do_monitor_shm(self) -> Generator[Metric, None, None]:
         int_fields: List[str] = [
