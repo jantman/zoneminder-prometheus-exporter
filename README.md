@@ -39,6 +39,7 @@ Note: `ZM_USER` and `ZM_PASSWORD` are only needed if your ZoneMinder instance ha
 * `ZM_EVENT_WINDOW_SECONDS` (*optional*, default `900`) - Rolling window, in seconds, over which the `zm_monitor_recent_*` event metrics are aggregated (see [Recording-persistence metrics](#recording-persistence-metrics)).
 * `ZM_EVENT_GRACE_SECONDS` (*optional*, default `120`) - Events that ended more recently than this are excluded from the windowed aggregates, because ZoneMinder may not have finished computing their `DiskSpace` yet; without this grace period a just-ended healthy event would momentarily read as zero-size.
 * `ZM_EVENT_QUERY_LIMIT` (*optional*, default `500`) - Maximum number of events fetched per scrape. Keep this comfortably above the number of events your busiest camera set produces within the query window (`ZM_EVENT_WINDOW_SECONDS` + 15 min); pyzm sorts newest-first and stops at this limit, so too low a value silently truncates the window and can drop quiet monitors entirely.
+* `ZM_EVENT_QUERY_TZ` (*optional*) - IANA timezone name (e.g. `America/New_York`) of the **ZoneMinder server**, used to compute the events query's start-time bound. The ZM API filters events by `StartTime` in the server's local timezone, so this must match ZM's timezone. If unset, falls back to `TZ`, then to this process's local timezone. **Set this (or `TZ`) whenever the exporter's container runs in a different timezone than ZoneMinder** (e.g. the container defaults to UTC while ZM runs in local time) — otherwise the query bound lands in the future and no events are returned. Requires the `tzdata` package (included in `requirements.txt`).
 
 ### Recording-persistence metrics
 
@@ -56,6 +57,8 @@ These metrics close that gap by inspecting recently-*ended* events:
 * `zm_monitor_recent_min_event_disk_space_bytes` / `zm_monitor_recent_min_event_frames` - smallest event size / frame count in the window, to surface partial or truncated writes that a `== 0` check would miss.
 
 The windowed aggregates exclude still-open events and purged events (`Emptied=1`, whose files are legitimately gone). **The `recent_*` metrics are sliding-window gauges computed at scrape time -- read them directly; do not apply `rate()`/`increase()`, which would double-count across overlapping windows.** Only `zm_monitor_last_event_id` is a monotonic value suitable for `increase()`.
+
+> **Timezone note:** the ZM API is inconsistent — it returns event `EndDateTime` in **UTC** but filters the events query by `StartTime` in the **server's local timezone**. The exporter handles `EndDateTime` as UTC internally, and computes the query bound using `ZM_EVENT_QUERY_TZ`/`TZ` (see above). If the exporter reports zero events while ZoneMinder is clearly recording, the query timezone is almost certainly wrong — set `ZM_EVENT_QUERY_TZ` to ZM's timezone.
 
 ## Grafana Dashboard
 

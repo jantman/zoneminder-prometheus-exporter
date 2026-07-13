@@ -32,7 +32,8 @@ import logging
 import socket
 import time
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Generator, List, Dict, Optional, Tuple, Any
 import json
 
@@ -305,6 +306,29 @@ class ZmExporter:
         self._event_query_limit: int = int(
             os.environ.get('ZM_EVENT_QUERY_LIMIT', '500')
         )
+        # ZoneMinder's events API filters by StartTime in the ZM SERVER's local
+        # timezone (while returning EndDateTime in UTC -- yes, inconsistent). We
+        # compute the events query's `from` bound in an explicit timezone so it
+        # is correct regardless of THIS process's timezone -- the exporter
+        # container often runs as UTC even when ZM does not, which would push
+        # the bound into the future and return zero events. Source the tz from
+        # ZM_EVENT_QUERY_TZ, then TZ; if neither resolves, fall back to a
+        # process-local relative bound (correct only when this process's tz
+        # already matches the ZM server's).
+        self._event_query_tz: Optional[ZoneInfo] = None
+        tz_name: Optional[str] = (
+            os.environ.get('ZM_EVENT_QUERY_TZ') or os.environ.get('TZ')
+        )
+        if tz_name:
+            try:
+                self._event_query_tz = ZoneInfo(tz_name)
+            except (ZoneInfoNotFoundError, ValueError) as ex:
+                logger.warning(
+                    'Could not resolve timezone %r for event queries (%s); '
+                    'falling back to process-local time. Ensure the tzdata '
+                    'package is installed or set a valid ZM_EVENT_QUERY_TZ.',
+                    tz_name, ex
+                )
 
     def collect(self) -> Generator[Metric, None, None]:
         logger.debug('Beginning collection')
@@ -671,12 +695,21 @@ class ZmExporter:
         """
         window: int = self._event_window_seconds
         grace: int = self._event_grace_seconds
-        # pad the query back beyond the window (ZM filters by StartTime; +15m
-        # covers ZM's default max event section length so long events that
-        # ended inside the window are still returned).
-        query_minutes: int = (window // 60) + 15
+        # Fetch events whose StartTime is within the window plus a 15-minute
+        # pad (ZM filters by StartTime; the pad covers long events that ended
+        # inside the window). Compute the bound in the ZM server timezone when
+        # known so it is correct even if this process runs as UTC; otherwise
+        # fall back to a process-local relative bound.
+        pad_seconds: int = window + 15 * 60
+        if self._event_query_tz is not None:
+            from_bound: str = (
+                datetime.now(self._event_query_tz)
+                - timedelta(seconds=pad_seconds)
+            ).strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            from_bound = f'{pad_seconds // 60} minutes ago'
         options: Dict[str, Any] = {
-            'from': f'{query_minutes} minutes ago',
+            'from': from_bound,
             'limit': self._event_query_limit,
         }
         logger.debug('Querying events with options: %s', options)
